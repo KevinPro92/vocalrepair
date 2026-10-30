@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vocalrepair"
+version = "0.1.0"
+description = "Open-source spectral analysis and vocal repair toolkit: pitch tracking, vibrato, artifact detection, time/frequency-domain correction"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["audio", "dsp", "pitch", "vocal", "spectral-analysis", "vibrato", "music"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Sound/Audio :: Analysis",
+  "Topic :: Multimedia :: Sound/Audio :: Editors",
+  "Topic :: Scientific/Engineering",
+]
+# 核心依赖刻意保持最小：numpy + scipy 即可完成全部 DSP 分析
+dependencies = [
+  "numpy>=1.24",
+  "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+# 更多音频格式（flac/ogg/mp3）与高质量重采样
+io = ["soundfile>=0.12"]
+# 绘图与报告
+plot = ["matplotlib>=3.7"]
+# WORLD 声码器：保共振峰变调/重合成（核心修复链路的必需项）
+# 单独成组是为了让 CI 与纯分析用法可以不装它
+vocoder = ["pyworld>=0.3.5"]
+# 神经网络人声分离（CPU 可跑，但很慢；无 GPU 时属"能用但慢"）
+neural = ["torch>=2.6", "demucs==4.1.0"]
+# 麦克风实时调音器（v0.5 规划中）
+realtime = ["sounddevice>=0.5"]
+full = [
+  "soundfile>=0.12",
+  "matplotlib>=3.7",
+  "pyworld>=0.3.5",
+  "torch>=2.6",
+  "demucs==4.1.0",
+]
+dev = ["pytest>=8", "soundfile>=0.12", "matplotlib>=3.7"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,35 @@
+# 依据全局规则 data-storage-and-lfs §3 的基线，按本项目裁剪
+
+# 原始数据只读且通常较大，不入库；保留哈希清单与目录占位
+data/raw/**
+!data/raw/.gitkeep
+!data/raw/MANIFEST.sha256
+data/interim/*
+!data/interim/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# 运行产物
+outputs/
+logs/*.log
+*.tmp
+*.flac.tmp
+
+# 模型权重（若启用 neural extras）
+*.pth
+*.onnx
+*.pt
+models/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

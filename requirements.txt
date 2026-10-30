@@ -1,0 +1,20 @@
+﻿# 核心（纯 DSP，零重型依赖即可跑分析与修复）
+numpy>=1.24
+scipy>=1.10
+
+# 音频 IO 与绘图
+soundfile>=0.12
+matplotlib>=3.7
+
+# WORLD 声码器：保共振峰的变调/重合成（必装，约 220 KB）
+pyworld>=0.3.5
+
+# 可选：进度条
+tqdm>=4.66
+
+# 可选重依赖（约 1.5 GB，本版本默认不启用）：
+# 装上后 separate 子命令会自动优先调用 demucs，否则降级到 HPSS 基线。
+# torch>=2.6
+# torchaudio>=2.0
+# demucs>=4.0
+# crepe>=0.0.13
