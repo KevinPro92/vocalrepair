@@ -17,7 +17,7 @@
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.4.2"
 
 from .dsp.f0 import F0Result, yin_f0
 from .dsp.pitch_scale import (

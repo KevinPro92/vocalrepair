@@ -1,5 +1,9 @@
 # vocalrepair
 
+[![CI](https://github.com/KevinPro92/vocalrepair/actions/workflows/ci.yml/badge.svg)](https://github.com/KevinPro92/vocalrepair/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+
 Open-source **spectral analysis and vocal repair** toolkit for Python.
 
 Given an audio file, `vocalrepair` aims to *see* what is wrong with a vocal

@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vocalrepair"
-version = "0.1.0"
+version = "0.4.2"
 description = "Open-source spectral analysis and vocal repair toolkit: pitch tracking, vibrato, artifact detection, time/frequency-domain correction"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
+authors = [{ name = "KevinPro92", url = "https://github.com/KevinPro92" }]
 keywords = ["audio", "dsp", "pitch", "vocal", "spectral-analysis", "vibrato", "music"]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -48,6 +49,12 @@ dev = ["pytest>=8", "soundfile>=0.12", "matplotlib>=3.7"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[project.urls]
+Homepage = "https://github.com/KevinPro92/vocalrepair"
+Repository = "https://github.com/KevinPro92/vocalrepair"
+Issues = "https://github.com/KevinPro92/vocalrepair/issues"
+Changelog = "https://github.com/KevinPro92/vocalrepair/blob/main/CHANGELOG.md"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
