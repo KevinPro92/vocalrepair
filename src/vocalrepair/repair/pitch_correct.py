@@ -59,6 +59,57 @@ class CorrectionPlan:
         }
 
 
+def _note_spans(
+    f0: np.ndarray,
+    times: np.ndarray,
+    valid: np.ndarray,
+    cents: np.ndarray,
+    center: np.ndarray,
+) -> list[tuple[int, int]]:
+    """把浊音划分成**音符级**的帧区间（v0.4.3 核心修正）。
+
+    为什么不能用"连续浊音段"
+    ------------------------
+    一段连续浊音里通常唱了好几个音（换音时不会断开）。若按"段"取一个目标音高，
+    就会把这几个音强行修成同一个音——实测用户"偏高"那段因此被改坏（听感上像
+    整体被拉走将近一个全音）。
+
+    现在改用 ``analysis.notes.segment_notes``：先按音高跳变把轨迹切成音符，
+    每个音符独立决定目标与修正量。音符之间的滑音/过渡帧不在任何音符内，
+    保持原样（这是对的：过渡本来就不该被量化）。
+
+    切分失败（音符太少）时回退到连续浊音段，并在报告中保留可见性。
+    """
+    from ..analysis.notes import segment_notes
+
+    try:
+        notes = segment_notes(f0, times)
+    except Exception:
+        return _runs(valid)
+
+    if len(notes) < 2:
+        return _runs(valid)
+
+    spans: list[tuple[int, int]] = []
+    for n in notes:
+        i0 = int(np.searchsorted(times, n.start_s, side="left"))
+        i1 = int(np.searchsorted(times, n.end_s, side="left"))
+        i1 = max(i1, i0 + 1)
+        i1 = min(i1, valid.size)
+        if i1 <= i0:
+            continue
+        # 音符区间内必须真的有浊音帧
+        if not np.any(valid[i0:i1]):
+            continue
+        # 与上一个音符重叠时截断，避免重复处理
+        if spans and i0 < spans[-1][1]:
+            i0 = spans[-1][1]
+            if i1 <= i0:
+                continue
+        spans.append((i0, i1))
+    return spans if len(spans) >= 2 else _runs(valid)
+
+
 def _runs(valid: np.ndarray) -> list[tuple[int, int]]:
     """连续 True 段。"""
     out: list[tuple[int, int]] = []
@@ -155,7 +206,7 @@ def plan_correction(
     pcs = scale_pitch_classes(root_pc, scale) if root_pc is not None else None
     limit = float(max_semitones) * 100.0
 
-    for i0, i1 in _runs(valid):
+    for i0, i1 in _note_spans(f0, t, valid, cents, center):
         seg_center = center[i0:i1]
         seg_cents = cents[i0:i1]
         if not np.any(np.isfinite(seg_center)):

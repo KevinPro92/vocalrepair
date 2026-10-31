@@ -347,7 +347,12 @@ def repair(
         match_ltas,
         soft_limit,
     )
-    from .repair.world_vocoder import shift_formants, world_analyze, world_synthesize
+    from .repair.world_vocoder import (
+        shift_formants,
+        warp_ap,
+        world_analyze,
+        world_synthesize,
+    )
 
     sig = np.asarray(x, dtype=float).ravel()
     warnings_list: list[str] = []
@@ -457,7 +462,31 @@ def repair(
         timbre_info["formant_shift_ratio"] = round(float(formant_shift), 4)
 
     # --- 8. 重合成 ---
-    y = world_synthesize(feat, f0_new=f0_new, sp_new=sp_new)
+    resynth_info: dict = {"engine": vocoder}
+    if vocoder == "none":
+        # 只做削波修复，不改音高：给用户一个"最小干预"的对照版本
+        y = clean.copy()
+        resynth_info["note"] = "跳过重合成：音高未修改，仅削波修复 + 静音门控"
+    elif vocoder == "psola":
+        from .repair.psola import psola_resynth
+
+        y, _psola_info = psola_resynth(
+            clean, sr, before.f0.f0_hz, plan.corrected_hz, before.f0.times
+        )
+        resynth_info.update(_psola_info)
+        warnings_list.append(
+            "psola 引擎：音准改善更明显且不做参数化重合成，但当前 pitch-mark 检测"
+            "不够精确（相位边界法），可能出现轻微颗粒感；同时无法应用包络音色增强"
+        )
+    else:
+        # ap 必须随 f0 一起在频率轴上缩放：只改 f0 会让"谐波处 ap 低 / 谐波间 ap 高"
+        # 的梳状结构失配，听感就是人声糊掉 + 吱呀/水流声。
+        ap_new = warp_ap(feat.ap, feat.f0, f0_new)
+        y = world_synthesize(feat, f0_new=f0_new, sp_new=sp_new, ap_new=ap_new)
+        warnings_list.append(
+            "world 引擎：音准修正正确，但参数化重合成对高气声素材（ap > 0.6）会产生"
+            "可闻的'水声/吱呀'；如需对比可用 --vocoder psola 或 --vocoder none"
+        )
     if y.size > sig.size:
         y = y[: sig.size]
     elif y.size < sig.size:
@@ -501,7 +530,12 @@ def repair(
         f0_safe = _to_world_grid(before.f0.f0_hz, before.f0.times, feat.f0.shape[0], frame_period)
         if abs(applied_st) > 1e-9:
             f0_safe = np.where(f0_safe > 0, f0_safe * (2.0 ** (applied_st / 12.0)), 0.0)
-        y = world_synthesize(feat, f0_new=f0_safe, sp_new=sp_new)
+        y = world_synthesize(
+            feat,
+            f0_new=f0_safe,
+            sp_new=sp_new,
+            ap_new=warp_ap(feat.ap, feat.f0, f0_safe),
+        )
         if y.size > sig.size:
             y = y[: sig.size]
         elif y.size < sig.size:
@@ -533,6 +567,7 @@ def repair(
         warnings=warnings_list,
         guards={"octave": guard, "timbre": timbre_guard},
         reference_info=reference_info,
+        resynth=resynth_info,
         params={
             "deadzone_cents": 16.0,
             "residual_cents": 8.0,
@@ -570,6 +605,7 @@ def _build_report(
     params: dict,
     guards: dict | None = None,
     reference_info: dict | None = None,
+    resynth: dict | None = None,
 ) -> dict:
     """组装 report.json（字段按 prompt 规格，另加前后对比字段）。"""
     b, a = before.report, after.report
@@ -608,6 +644,7 @@ def _build_report(
         "warnings": warnings,
         "guards": guards or {},
         "reference_align": reference_info or {"enabled": False},
+        "resynthesis": resynth or {},
         "params": params,
         "disclaimer": (
             "MP3 等有损格式丢失的高频与削波信息无法真正恢复；"

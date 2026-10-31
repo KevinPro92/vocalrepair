@@ -120,23 +120,58 @@ def world_analyze(
     )
 
 
+def warp_ap(ap: np.ndarray, f0_old: np.ndarray, f0_new: np.ndarray) -> np.ndarray:
+    """按 f0 比率在频率轴上重采样非周期成分 ap。
+
+    为什么必须做（这是"糊掉 + 吱呀 + 水流声"的直接原因）
+    --------------------------------------------------
+    ``ap[k]`` 表示"第 k 个频点有多少比例是非周期成分"。它的结构是**梳状**的：
+    谐波位置 ap 低（周期性最强），谐波之间 ap 高（气声/噪声）。f0 改变后谐波梳
+    会移动；若 ap 不同步移动，就会出现：
+      - 新谐波落在原来"气声多"的格子上 → 谐波被当成噪声 → **人声糊掉**
+      - 原谐波位置（ap 低）现在落在谐波之间 → 噪声被当成谐波 → **吱呀/水流声**
+    实测素材 73-77% 的频点 ap > 0.5（手机录音的气声与底噪），所以这个失配
+    非常明显。
+
+    做法与保共振峰的 sp 不同：sp 是**包络**（与 f0 无关，绝对不能动），
+    ap 是**谐波结构的一部分**（必须跟着 f0 走）。这一区分是 WORLD 变调的要点。
+    """
+    n_frames, n_bins = ap.shape
+    out = np.asarray(ap, dtype=np.float64).copy()
+    src = np.arange(n_bins, dtype=float)
+    fo = np.asarray(f0_old, dtype=float)
+    fn = np.asarray(f0_new, dtype=float)
+
+    for i in range(min(n_frames, fo.size, fn.size)):
+        if fo[i] <= 0 or fn[i] <= 0:
+            continue
+        ratio = fn[i] / fo[i]
+        if abs(ratio - 1.0) < 1e-4:
+            continue
+        dst = src / ratio
+        out[i] = np.interp(dst, src, ap[i], left=ap[i, 0], right=ap[i, -1])
+    return out
+
+
 def world_synthesize(
     feat: WorldFeatures,
     f0_new: np.ndarray | None = None,
     sp_new: np.ndarray | None = None,
+    ap_new: np.ndarray | None = None,
 ) -> np.ndarray:
     """用 WORLD 重新合成波形。
 
-    只替换 f0（或 sp）而不动 ap：ap 描述"该频点有多少能量是非周期成分"，
-    与基频无关，保持原样才不会把气声变成噪声或反之。
+    ap_new 通常必须与 f0_new 同步变化（见 ``warp_ap``）：只改 f0 而不改 ap
+    会产生梳状失配，听感上是"糊掉 + 吱呀声"。
     """
     import pyworld
 
     f0 = feat.f0 if f0_new is None else np.asarray(f0_new, dtype=np.float64)
     sp = feat.sp if sp_new is None else np.asarray(sp_new, dtype=np.float64)
+    ap = feat.ap if ap_new is None else np.asarray(ap_new, dtype=np.float64)
     if f0.shape[0] != sp.shape[0]:
         raise ValueError(f"f0 帧数 {f0.shape[0]} 与 sp 帧数 {sp.shape[0]} 不一致")
-    y = pyworld.synthesize(f0, sp, feat.ap, feat.sr, feat.frame_period)
+    y = pyworld.synthesize(f0, sp, ap, feat.sr, feat.frame_period)
     return np.asarray(y, dtype=np.float64)
 
 
@@ -194,7 +229,9 @@ def resynth_transpose(
     ratio = 1.0 if formant_shift is None else float(formant_shift)
     sp_new = shift_formants(feat.sp, ratio) if abs(ratio - 1.0) > 1e-9 else feat.sp
 
-    y = world_synthesize(feat, f0_new=f0_new, sp_new=sp_new)
+    # ap 也要随 f0 缩放（与 pipeline 同一理由：否则梳状结构失配 → 糊掉/吱呀）
+    ap_new = warp_ap(feat.ap, feat.f0, f0_new)
+    y = world_synthesize(feat, f0_new=f0_new, sp_new=sp_new, ap_new=ap_new)
     if y.size > sig.size:
         y = y[: sig.size]
     elif y.size < sig.size:

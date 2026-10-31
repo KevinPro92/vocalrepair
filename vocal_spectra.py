@@ -428,7 +428,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--max-cents", dest="max_cents", type=float, default=100.0)
     r.add_argument("--frame-period", dest="frame_period", type=float, default=5.0)
     r.add_argument("--sr", type=int, default=44100)
-    r.add_argument("--vocoder", default="world", choices=["world", "phase", "neural"])
+    r.add_argument("--vocoder", default="world",
+                   choices=["world", "psola", "none", "phase", "neural"],
+                   help="合成引擎：world（默认，保共振峰）/ psola（音准更好但可能颗粒）/ none（只修削波）")
     r.add_argument("--make-mp3", dest="make_mp3", action="store_true")
     r.add_argument("--report", default=None)
     r.add_argument("--plot", default=None)
