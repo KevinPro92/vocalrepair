@@ -31,11 +31,16 @@ take and *fix* it — while keeping the singer's own timbre and vibrato intact.
 | `analysis` | Note-event table, key estimation (Krumhansl-Kessler) | **done** |
 | `repair` | De-clipping (spline for ≤10 ms, conservative for severe) | **done** |
 | `repair` | Note-level pitch correction: dead zone 16 cents, residual 8 cents, vibrato preserved | **done** |
+| `repair` | PSOLA engine with Praat-style pitch marks (low-pass to 1.5·f0 → peak pick → period check → fill) | **done** |
+| `repair` | Glide protection (no correction when f0 slew > 2000 cents/s) — note-level decision | **done** |
+| `repair` | Transient protection (spectral flux, MAD threshold) — frame-level | **done** |
 | `repair` | WORLD resynthesis — formant-preserving transposition, ±5 semitone hard limit | **done** |
-| `repair` | Envelope EQ (low-harmonic support / presence / sibilance), compression, soft limiting | **done** |
+| `repair` | Envelope EQ (low-harmonic support / presence / sibilance), envelope matching, compression, soft limiting | **done** |
+| `repair` | Pressed-voice detection (5-metric vote: H1-H2 / H1-A3 / slope / centroid / HNR) + resonance relief on high-confidence segments only | **done** |
+| `repair` | Denoise: spectral subtraction / Wiener / static high-cut (off by default — see note) | **done** |
 | `report` | `report.json`, 4-panel comparison figure, self-contained HTML | **done** |
-| `separation` | HPSS baseline (low quality); Demucs auto-detected if installed | baseline only |
-| `reference` | Reference-audio DTW alignment (Sakoe-Chiba band) + LTAS timbre weighting | **experimental** (see note) |
+| `separation` | Demucs (`--two-stems=vocals`) when installed, plus centre-channel extraction fallback | **done** |
+| `reference` | Reference-audio note-level DTW alignment + LTAS timbre weighting | **experimental** (see note) |
 
 Verified numbers from `python vocal_spectra.py --self-test` (9/9 pass):
 
@@ -52,11 +57,66 @@ Verified numbers from `python vocal_spectra.py --self-test` (9/9 pass):
 ```bash
 python vocal_spectra.py --self-test                       # end-to-end assertions
 python vocal_spectra.py analyze --input song.wav --outdir outputs/
-python vocal_spectra.py repair  --input song.wav \
-    --output outputs/repaired.wav --strength 0.7 --transpose 2 \
-    --report outputs/report.json --plot outputs/compare.png --html outputs/report.html
 python vocal_spectra.py separate --input song.wav --outdir outputs/
 ```
+
+### Repairing an arbitrary audio file
+
+```bash
+# 1. one-shot: repair + report + figure + HTML
+python vocal_spectra.py repair \
+    --input "my_take.m4a" \
+    --output outputs/repaired.wav \
+    --vocoder psola \
+    --report outputs/report.json \
+    --plot   outputs/compare.png \
+    --html   outputs/report.html
+
+# 2. transposition (formant-preserving, hard limit ±5 semitones)
+python vocal_spectra.py repair --input a.wav --output b.wav --transpose +2   # up a whole tone
+python vocal_spectra.py repair --input a.wav --output b.wav --transpose -3   # down a minor third
+
+# 3. conservative mode: only touch notes that are actually out of tune
+python vocal_spectra.py repair --input a.wav --output b.wav --min-dev 30 --strength 0.6
+
+# 4. reference-guided: follow a version you like (runs entirely locally)
+python vocal_spectra.py repair --input mine.wav --reference original.wav \
+    --align-pitch --align-timbre conservative --output outputs/ref_aligned.wav
+
+# 5. denoise (off by default; A/B it before keeping it)
+python vocal_spectra.py repair --input a.wav --output b.wav --denoise specsub
+
+# 6. vocal / accompaniment split, then repair the vocal and remix
+python vocal_spectra.py separate --input ktv.m4a --outdir outputs/sep
+python vocal_spectra.py repair --input outputs/sep/vocals.wav --output outputs/sep/vocals_fixed.wav --vocoder psola
+```
+
+### Key flags
+
+| Flag | Meaning |
+|---|---|
+| `--vocoder psola\|world\|none` | `psola` = best pitch accuracy, time-domain (no parametric resynthesis); `world` = formant-preserving but parametric (audible "watery" artefacts on breathy material); `none` = no pitch change at all, only de-clipping |
+| `--strength 0–1` | How much of the measured deviation to remove (1.0 = full correction, mechanical) |
+| `--min-dev N` | Only correct notes whose median deviation exceeds N cents; everything else is left bit-identical |
+| `--transpose ±N` | Semitones; clamped at ±5, the point where PSOLA/WORLD start to sound artificial |
+| `--key auto\|C\|Am` | Key for scale-aware snapping; `auto` only affects the report, never the correction |
+| `--reference FILE` | Reference performance for note-level DTW alignment |
+| `--denoise off\|specsub\|wiener\|highcut` | Noise reduction; `off` by default (see below) |
+| `--no-compress` | Disable compression + soft limiting (use this to judge whether noise comes from the recording or from make-up gain) |
+| `--no-voice-relief` | Disable resonance relief on pressed-voice segments |
+
+### Note on denoise
+
+Measured on a real KTV recording: the noise sits **above 2 kHz and is 10–19 dB
+stronger than the voice**, with a temporal CV of 1.16 (i.e. not stationary).
+Static high-cut removes **voice** (−4.9 dB) faster than noise (−1.7 dB), so it is
+implemented but not recommended. Spectral subtraction and Wiener reduce noise by
+about 2.5 dB while leaving the voice band essentially untouched (−0.1 dB) — but
+spectral gain changes break magnitude/phase consistency, which produces time-domain
+overshoot (measured: peak 0.284 → 0.891 before the fix). Both methods therefore
+smooth the gain in frequency *and* time and hard-limit the peak. **Default is
+`off`**: a noise reduction stage is the single easiest way to damage a voice you
+already like.
 
 ## Design lessons (kept here on purpose)
 
@@ -172,17 +232,71 @@ python examples/quickstart.py
   suppresses ~70% of vibrato modulation, not 100%; clipped waveform peaks can
   only be estimated, never restored losslessly.
 
+## GUI options
+
+The DSP layer is pure functions over `numpy` arrays, so **any** GUI is a thin
+wrapper around `vocalrepair.pipeline.repair()`. Ranked by effort/benefit:
+
+| Option | Effort | Strengths | Weaknesses |
+|---|---|---|---|
+| **Gradio** | ~150 lines | drag-and-drop file → audio player + parameter panel; `pip install gradio`; `share=True` gives a public link instantly | limited layout control, not a "native app" |
+| **Streamlit** | ~200 lines | best for showing the analysis report (HTML/matplotlib embed directly) | stateless script model; awkward for iterative A/B |
+| **PySide6 / PyQt** | ~1.5k lines | real desktop app, can ship as a `.exe` | you have to draw the waveform / piano-roll yourself |
+| **FastAPI + web frontend** | largest | unlimited; enables a professional waveform + piano-roll editor | frontend engineering dominates |
+
+Recommended path: **Gradio first** (a usable tool in an afternoon), then move to
+PySide6 only if you need a real waveform/piano-roll editor. A minimal Gradio sketch:
+
+```python
+import gradio as gr
+from vocalrepair.audio_io import read_audio, to_mono, write_audio
+from vocalrepair.pipeline import repair
+
+def run(path, strength, semitones, denoise):
+    x, sr = read_audio(path, sr=44100)
+    res = repair(to_mono(x).astype(float), sr, strength=strength,
+                 transpose=semitones, vocoder="psola", denoise=denoise)
+    out = "repaired.wav"
+    write_audio(out, res.y, sr)
+    return out, res.report
+
+gr.Interface(run,
+    [gr.Audio(type="filepath"),
+     gr.Slider(0, 1, 0.7, label="strength"),
+     gr.Slider(-5, 5, 0, step=1, label="transpose (semitones)"),
+     gr.Dropdown(["off", "specsub", "wiener"], value="off", label="denoise")],
+    [gr.Audio(label="result"), gr.JSON(label="report")],
+    title="vocalrepair").launch()
+```
+
 ## Roadmap
 
 - **done** spectral analysis: peaks/valleys, flatness/contrast/slope, LTAS
 - **done** vibrato metrics, HNR/CPP/jitter/shimmer/H1-H2, LPC formants, note table
-- **done** repair: de-clipping, note-level pitch correction, WORLD formant-preserving
-  transposition (±5 semitone limit), envelope EQ, compression, soft limiting
+- **done** repair: de-clipping, note-level pitch correction, PSOLA (Praat-style pitch marks)
+  and WORLD engines, glide/transient protection, pressed-voice relief, ±5 semitone transposition
 - **done** report: JSON + 4-panel figure + self-contained HTML
-- **next** real Demucs separation (optional extra), lead/backing-vocal split
-- **next** reference-audio alignment (DTW on f0 + LTAS matching)
-- **v0.5** microphone realtime tuner (`sounddevice`), realtime spectrogram, metronome
-- **v0.6** multi-pitch (polyphonic/choir) analysis
+- **done** Demucs 2-stem separation + centre-channel fallback
+- **done** reference-audio note-level DTW alignment (reliable for timing, experimental for pitch)
+- **next** denoise: a better noise model than "quietest 10 % of frames"
+- **next** singing-vocal break detection (non-clipping "破音": HNR collapse + f0 jump +
+  aperiodicity burst). Currently only **digital** clipping is repaired.
+- **next** GUI (see above)
+- **v0.6** microphone realtime tuner (`sounddevice`), realtime spectrogram, metronome
+- **v0.7** multi-pitch (polyphonic/choir) analysis
+
+## What this tool deliberately does not do
+
+- No automatic scoring. It reports measured values and reference ranges, never a
+  single "quality score" — artistic quality cannot be reduced to one number.
+- No vocal-mode labels (chest / mix / head / falsetto) yet. The pressed/breathy axes
+  are implemented and drive the resonance relief, but the labels need calibration on
+  labelled real recordings before they can be shown as fact.
+- Transposition is hard-limited to ±5 semitones, and the report says so — beyond that,
+  PSOLA and WORLD both become audibly artificial.
+- If the output f0 differs from the input by more than 600 cents (median), the pipeline
+  **refuses** to return the corrected pitch and falls back to "no pitch change". A
+  result that is a whole octave off is worse than no result at all.
 
 ## License
 

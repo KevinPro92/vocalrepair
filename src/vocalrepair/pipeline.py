@@ -338,6 +338,8 @@ def repair(
     align_timbre: str = "off",
     reference_alpha: float = 0.6,
     min_dev_cents: float = 0.0,
+    voice_relief: bool = True,
+    denoise: str = "off",
 ) -> RepairResult:
     """完整修音管线。
 
@@ -541,6 +543,50 @@ def repair(
             ltas_info["reference_weight"] = w
         y, ltas_info = match_ltas(y, sr, ref_db, before.freqs, max_db=max_db)
 
+    # --- 9a. 发声方式（挤/压）检测与共鸣缓解 ---
+    # 物理依据：挤压声（pressed phonation）表现为谱倾斜更平、H1-H2 更小、
+    # 谐波重心上移、HNR 略高（声门闭合过紧）。缓解方向是压低 2 kHz 以上的
+    # 谐波能量，让谱倾斜回到接近放松发声的斜率。
+    # 安全边界：只处理 >= 4/5 票的高置信段——这是唯一会改动音色的操作，必须保守。
+    voice_mode_info: dict = {"applied": False}
+    if voice_relief:
+        from .analysis.voice_mode import detect_voice_mode, summarize_segments
+        from .repair.postproc import apply_resonance_relief
+
+        _vm_frames = detect_voice_mode(y, sr, before.f0.f0_hz, before.f0.times)
+        _vm = summarize_segments(_vm_frames)
+        y, _relief = apply_resonance_relief(y, sr, _vm["segments"])
+        voice_mode_info = {
+            "applied": bool(_relief["applied"]),
+            "n_abnormal": _vm["n_abnormal"],
+            "abnormal": _vm["abnormal"],
+            "relief": _relief,
+        }
+
+    # --- 9a2. 降噪（可选）---
+    # 实测依据（用户素材）：噪声主要在 2 kHz 以上（人声比噪声弱 10~19 dB），
+    # 且时间稳定性 CV=1.16（不平稳）→ 必须加增益下限，否则产生 musical noise。
+    # 静态 highcut 会把高频噪声和人声一起削（实测削人声 -4.9 dB、噪声只 -1.7 dB），
+    # 故默认关闭；specsub 在同等降噪量下人声几乎不动（-0.1 dB）。
+    denoise_info: dict = {"applied": False}
+    _dn = str(denoise or "off").lower()
+    if _dn in ("specsub", "wiener", "highcut"):
+        from .repair.denoise import highcut, spectral_subtraction, wiener_denoise
+
+        if _dn == "specsub":
+            y, denoise_info = spectral_subtraction(y, sr, over_sub=3.0, floor=0.03, min_gain=0.12)
+        elif _dn == "wiener":
+            # min_gain 0.15 太激进：实测整体 RMS 掉到 0.485（一半），
+            # 0.30 相当于最多衰减 10.5 dB，与用户在 A/B 选中的温和档一致。
+            y, denoise_info = wiener_denoise(y, sr, min_gain=0.30)
+        else:
+            y, denoise_info = highcut(y, sr)
+        denoise_info["applied"] = True
+    elif _dn not in ("off", "none"):
+        warnings_list.append(
+            f"未知 denoise 方法 '{denoise}'，已忽略（可选：off / specsub / wiener / highcut）"
+        )
+
     # --- 9b. 动态处理 ---
     if do_compress:
         y = compress(y, sr)
@@ -601,6 +647,8 @@ def repair(
         guards={"octave": guard, "timbre": timbre_guard},
         reference_info=reference_info,
         resynth=resynth_info,
+        voice_mode=voice_mode_info,
+        denoise=denoise_info,
         params={
             "deadzone_cents": 16.0,
             "residual_cents": 8.0,
@@ -639,6 +687,8 @@ def _build_report(
     guards: dict | None = None,
     reference_info: dict | None = None,
     resynth: dict | None = None,
+    voice_mode: dict | None = None,
+    denoise: dict | None = None,
 ) -> dict:
     """组装 report.json（字段按 prompt 规格，另加前后对比字段）。"""
     b, a = before.report, after.report
@@ -678,6 +728,8 @@ def _build_report(
         "guards": guards or {},
         "reference_align": reference_info or {"enabled": False},
         "resynthesis": resynth or {},
+        "voice_mode": voice_mode or {"applied": False},
+        "denoise": denoise or {"applied": False},
         "params": params,
         "disclaimer": (
             "MP3 等有损格式丢失的高频与削波信息无法真正恢复；"

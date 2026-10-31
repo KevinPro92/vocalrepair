@@ -60,6 +60,23 @@ def estimate_noise_spectrum(
     return noise, quiet
 
 
+def _limit_overshoot(out: np.ndarray, ref: np.ndarray, tol: float = 1.05) -> np.ndarray:
+    """过冲保护。
+
+    在频域只改幅度、保留原相位，会破坏"幅度-相位一致性"，重建后时域出现
+    尖峰。实测谱减把峰值从 0.284 抬到 0.891（接近满量程），若不处理会在后续
+    限幅器里被硬压，听感就是新的失真。
+    这里只在输出峰值超过输入的 tol 倍时整体缩放——不改变频谱形状，不引入失真。
+    """
+    pk_in = float(np.max(np.abs(ref))) if ref.size else 0.0
+    pk_out = float(np.max(np.abs(out))) if out.size else 0.0
+    if pk_in <= 0.0 or pk_out <= 0.0:
+        return out
+    if pk_out > pk_in * tol:
+        return out * (pk_in * tol / pk_out)
+    return out
+
+
 def highcut(
     y: np.ndarray,
     sr: int,
@@ -103,7 +120,17 @@ def spectral_subtraction(
     gain = np.sqrt(np.maximum(sub, 0.0) / np.maximum(power, _EPS))
     gain = np.maximum(gain, min_gain)      # 限幅：避免过度削减
     gain = np.maximum(gain, floor)         # 谱底：避免 musical noise 的深洞
+    # 频率轴 + 时间轴平滑（3-bin Hann）。
+    # 必须做：谱减保持原相位但改变幅度，相邻频点/相邻帧的增益突变会破坏
+    # 幅度-相位一致性，在时域产生尖峰过冲（实测峰值 0.284 -> 0.891）。
+    k = np.array([0.25, 0.5, 0.25])
+    if gain.shape[0] >= 3:
+        gain = np.apply_along_axis(lambda r: np.convolve(r, k, mode="same"), 0, gain)
+    if gain.shape[1] >= 3:
+        gain = np.apply_along_axis(lambda r: np.convolve(r, k, mode="same"), 1, gain)
+    gain = np.clip(gain, min_gain, 1.0)
     out = istft(mag * gain, phase, 2048, 512, length=sig.size)
+    out = _limit_overshoot(out, sig)
     return out, {
         "method": "spectral_subtraction",
         "over_sub": over_sub,
@@ -136,11 +163,19 @@ def wiener_denoise(
     gain = np.maximum(gain, min_gain)
 
     if smooth_frames >= 3:
-        k = np.hanning(smooth_frames)
+        # np.hanning(3) == [0, 1, 0] —— 等于完全不平滑。必须取内部点，
+        # 否则"平滑"参数形同虚设（本项目实测过这个坑）。
+        k = np.hanning(smooth_frames + 2)[1:-1]
         k = k / k.sum()
         gain = np.apply_along_axis(lambda r: np.convolve(r, k, mode="same"), 1, gain)
+    # 频率轴平滑：与谱减同理，邻频增益突变会在时域产生过冲
+    if gain.shape[0] >= 3:
+        kf = np.array([0.25, 0.5, 0.25])
+        gain = np.apply_along_axis(lambda r: np.convolve(r, kf, mode="same"), 0, gain)
+    gain = np.clip(gain, min_gain, 1.0)
 
     out = istft(mag * gain, phase, 2048, 512, length=sig.size)
+    out = _limit_overshoot(out, sig)
     return out, {
         "method": "wiener",
         "min_gain": min_gain,

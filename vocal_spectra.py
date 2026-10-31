@@ -151,6 +151,8 @@ def cmd_repair(args: argparse.Namespace) -> int:
         align_timbre=args.align_timbre,
         min_dev_cents=float(getattr(args, "min_dev", 0.0) or 0.0),
         do_compress=not bool(getattr(args, "no_compress", False)),
+        denoise=str(getattr(args, "denoise", "off") or "off"),
+        voice_relief=not bool(getattr(args, "no_voice_relief", False)),
     )
 
     out = Path(args.output)
@@ -441,10 +443,18 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--report", default=None)
     r.add_argument("--plot", default=None)
     r.add_argument("--html", default=None)
-    r.add_argument("--reference", default=None, help="参考音频（加分项 A，本版本未实现）")
+    r.add_argument("--reference", default=None,
+                   help="参考音频（如原唱/你认可的版本）：做音符级 DTW 对齐；"
+                        "纯本地处理，不上传")
     r.add_argument("--align-pitch", dest="align_pitch", action="store_true")
     r.add_argument("--align-timbre", dest="align_timbre", default="off",
                    choices=["off", "conservative", "aggressive"])
+    r.add_argument("--denoise", default="off",
+                   choices=["off", "specsub", "wiener", "highcut"],
+                   help="降噪：off（默认）/ specsub（频谱减，实测最优）/ "
+                        "wiener / highcut（会连空气感一起削，不建议）")
+    r.add_argument("--no-voice-relief", dest="no_voice_relief", action="store_true",
+                   help="关闭挤/压发声段的共鸣缓解（默认开启，仅作用于高置信段）")
 
     s = sub.add_parser("separate", help="人声/伴奏分离")
     s.add_argument("--input", default="input.mp3")
