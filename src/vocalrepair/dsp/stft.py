@@ -204,6 +204,40 @@ def log_frequency_spectrogram(
     return out, log_freqs
 
 
+def chroma_from_f0(
+    f0_hz: np.ndarray,
+    voiced: np.ndarray,
+    weights: np.ndarray | None = None,
+) -> np.ndarray:
+    """音高驱动的 12 维色度向量（**单声部**调性估计的正确做法）。
+
+    为什么不用 ``chroma_from_spectrum``
+    ----------------------------------
+    频谱色度把每个 bin 的能量按"最近的音级"累加，于是**谐波会被算到错的音级上**：
+    唱 F3 时二次谐波是 F4（同一音级，没事），但三次谐波是 C5、五次是 A5，这些都会
+    被计入并污染分布。实测：三段录音（F大调、G大调、F大调）被估计成 G#、D#、G#，
+    全部错位。
+
+    单声部人声根本不需要从频谱里"猜"音级——f0 轨迹已经给出了每一个时刻的音高。
+    直接对浊音帧的 pitch class 计数即可，完全没有谐波污染。
+
+    返回长度 12 的归一化向量（索引 = 音级，0 = C）。
+    """
+    f = np.asarray(f0_hz, dtype=float)
+    v = np.asarray(voiced, dtype=bool) & np.isfinite(f) & (f > 0)
+    hist = np.zeros(12, dtype=float)
+    if not np.any(v):
+        return hist
+
+    midi = 69.0 + 12.0 * np.log2(f[v] / 440.0)
+    pc = np.mod(np.round(midi).astype(int), 12)
+    w = np.ones(pc.size) if weights is None else np.asarray(weights, dtype=float)[v]
+    np.add.at(hist, pc, w)
+
+    total = hist.sum()
+    return hist / total if total > 0 else hist
+
+
 def chroma_from_spectrum(
     mag: np.ndarray,
     freqs: np.ndarray,

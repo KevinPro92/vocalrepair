@@ -26,7 +26,7 @@ from .dsp.f0 import F0Result, yin_f0
 from .dsp.f0_track import robust_f0
 from .dsp.octave import find_octave_suspects
 from .dsp.pitch_scale import cents_deviation
-from .dsp.stft import chroma_from_spectrum, stft_mag_phase
+from .dsp.stft import chroma_from_f0, chroma_from_spectrum, stft_mag_phase
 
 __all__ = ["AnalysisContext", "RepairResult", "analyze", "repair"]
 
@@ -93,13 +93,16 @@ def analyze(
         f0.voiced = mask & np.isfinite(f0.f0_hz)
     mag, _phase, freqs, stft_times = stft_mag_phase(sig, sr, n_fft=n_fft, hop_length=hop_length)
     chroma = chroma_from_spectrum(mag, freqs)
+    # 调性估计用**音高驱动**的色度（单声部）：频谱色度会被谐波污染，
+    # 实测会把 F 大调判成 G# 大调、G 大调判成 D# 大调。
+    chroma_pitch = chroma_from_f0(f0.f0_hz, f0.voiced)
     formants, _ft = track_formants(sig, sr, voiced=f0.voiced)
 
     vib = analyze_vibrato(f0.f0_hz, f0.times)
     notes = segment_notes(f0.f0_hz, f0.times)
     voice = voice_quality_summary(sig, sr, f0.f0_hz, mag, freqs)
     spec = peak_valley_summary(mag, freqs)
-    key = estimate_key(chroma)
+    key = estimate_key(chroma_pitch[:, None])
     octaves = find_octave_suspects(f0.f0_hz, f0.times)
 
     dev = np.asarray(cents_deviation(np.where(np.isfinite(f0.f0_hz), f0.f0_hz, np.nan)))

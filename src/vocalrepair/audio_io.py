@@ -13,6 +13,10 @@ import numpy as np
 
 __all__ = ["read_audio", "write_audio", "to_mono", "resample_audio", "peak_normalize"]
 
+import logging
+
+LOG_DECODE = logging.getLogger(__name__)
+
 
 def _sf_available() -> bool:
     try:
@@ -34,6 +38,57 @@ def _normalize_integer(data: np.ndarray) -> np.ndarray:
     if data.dtype == np.uint8:
         return (data.astype(np.float64) - 128.0) / 128.0
     return data.astype(np.float64)
+
+
+def _ffmpeg_decode(path: Path, sr: int | None = None) -> tuple[np.ndarray, int]:
+    """用 ffmpeg 解码 soundfile 不支持的格式（m4a/aac/mp4/wma…）。
+
+    解码器来源优先级：
+    1. ``imageio-ffmpeg`` 自带的静态二进制（纯 pip 安装，无需系统装 ffmpeg）
+    2. 系统 PATH 里的 ``ffmpeg``
+
+    为什么必须有这条路径：libsndfile 只支持 wav/flac/ogg/mp3，**不支持 m4a/AAC**，
+    而手机录音（iPhone/Android 默认）几乎都是 m4a。实测直接读会抛
+    ``LibsndfileError: Format not recognised``。
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    exe: str | None = None
+    try:
+        import imageio_ffmpeg
+
+        exe = imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        exe = shutil.which("ffmpeg")
+    if not exe:
+        raise RuntimeError(
+            f"无法解码 {path.suffix!r} 文件：soundfile 不支持该格式，且未找到 ffmpeg。"
+            "请执行 `pip install imageio-ffmpeg`（自带静态 ffmpeg），或把文件转为 WAV。"
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "decoded.wav"
+        cmd = [
+            exe, "-y", "-hide_banner", "-loglevel", "error",
+            "-i", str(path),
+            "-ac", "2",
+            "-c:a", "pcm_s16le",
+            str(out),
+        ]
+        if sr is not None:
+            cmd[-3:-3] = ["-ar", str(int(sr))]
+        subprocess.run(cmd, check=True, capture_output=True)
+        return _read_wav_scipy(out)
+
+
+def _read_wav_scipy(path: Path) -> tuple[np.ndarray, int]:
+    """用 scipy 读 WAV（作为 ffmpeg 输出的回读路径）。"""
+    from scipy.io import wavfile
+
+    fs, raw = wavfile.read(str(path))
+    return _normalize_integer(np.asarray(raw)), int(fs)
 
 
 def read_audio(
@@ -62,8 +117,14 @@ def read_audio(
     if _sf_available():
         import soundfile as sf
 
-        data, fs = sf.read(str(p), dtype="float64", always_2d=False)
-        data = np.asarray(data, dtype=np.float64)
+        try:
+            data, fs = sf.read(str(p), dtype="float64", always_2d=False)
+            data = np.asarray(data, dtype=np.float64)
+        except Exception:
+            # libsndfile 不支持的格式（m4a/AAC/mp4/wma…）降级到 ffmpeg。
+            # 不静默吞掉：如果 ffmpeg 也没有，_ffmpeg_decode 会抛出带指引的错误。
+            LOG_DECODE.info("soundfile 无法解码 %s，改用 ffmpeg", p.name)
+            data, fs = _ffmpeg_decode(p, sr=None)
     else:
         from scipy.io import wavfile
 

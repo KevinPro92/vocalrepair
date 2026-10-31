@@ -28,7 +28,8 @@ dependencies = [
 
 [project.optional-dependencies]
 # 更多音频格式（flac/ogg/mp3）与高质量重采样
-io = ["soundfile>=0.12"]
+# imageio-ffmpeg 提供静态 ffmpeg，用于 m4a/AAC 等 libsndfile 不支持的格式
+io = ["soundfile>=0.12", "imageio-ffmpeg>=0.5"]
 # 绘图与报告
 plot = ["matplotlib>=3.7"]
 # WORLD 声码器：保共振峰变调/重合成（核心修复链路的必需项）

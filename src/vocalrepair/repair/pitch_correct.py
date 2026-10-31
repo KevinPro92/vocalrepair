@@ -98,6 +98,7 @@ def plan_correction(
     max_semitones: float = 5.0,
     vibrato_hz: float = 5.5,
     pitch_adaptive_deadzone: bool = True,
+    auto_strength: bool = True,
 ) -> CorrectionPlan:
     """生成音准修正计划（只做 f0 层面的决策，不合成音频）。
 
@@ -121,6 +122,29 @@ def plan_correction(
     # 中值窗需覆盖一个完整颤音周期，才能把调制与台阶分开
     win = int(round(1.0 / max(vibrato_hz * dt, 1e-9)))
     center = _median_track(cents, win)
+
+    # ---- 自适应力度（auto_strength）----
+    # 先看整段"有多跑调"，再决定手术刀还是大锤。这是专业修音师的实际做法：
+    # 一个本来就唱得准的段落，任何修正都会把有意的表现力（导音偏高、向上冲）
+    # 磨平。实测：本来中位偏差 12.1 cents 的"不跑调"素材，用统一 16/8 参数修完
+    # 反而恶化到 14.0 cents。
+    dz_base = float(deadzone_cents)
+    res_base = float(residual_cents)
+    overall_dev = 0.0
+    if auto_strength:
+        with np.errstate(invalid="ignore"):
+            dev_signed = cents - np.round(cents / 100.0) * 100.0
+        d = np.abs(dev_signed[np.isfinite(dev_signed)])
+        overall_dev = float(np.median(d)) if d.size else 0.0
+        if overall_dev < 15.0:
+            # 本来就准：几乎不动，只处理明显出格的音，并把整体力度压到 40%
+            dz_base, res_base = 30.0, 12.0
+            strength = float(strength) * 0.4
+        elif overall_dev < 25.0:
+            dz_base, res_base = 22.0, 10.0
+        else:
+            dz_base, res_base = 16.0, 8.0
+
 
     corrected = f0.copy()
     target_hz = np.full(n, np.nan)
@@ -156,22 +180,18 @@ def plan_correction(
         tgt_cents = (tgt_midi - 69.0) * 100.0
         target_hz[i0:i1] = midi_to_hz(tgt_midi)
 
-        # 分频段死区（v0.4.2）：低音区压晃动、高音区留张力。
-        # 依据：低音区（< E3 ≈ 165 Hz）容易与伴奏低频争夺、也容易因气息不稳而
-        # 晃动，收紧死区（12 cents）更干净；人耳对 C4-C6 的音高偏差最敏感，
-        # 但高音往往带有"向上冲"的表现力张力，死区放宽到 22 cents 以免修成死板。
-        # 中音区保持基准 16 cents。
-        dz = deadzone_cents
+        # 分频段死区：在 dz_base 上按音区缩放（低音更严压晃动、高音更宽保张力）
+        dz = dz_base
         if pitch_adaptive_deadzone:
             hz = 440.0 * 2.0 ** (c_med / 1200.0)
-            dz = 12.0 if hz < 165.0 else (16.0 if hz < 500.0 else 22.0)
+            dz = dz_base * (0.75 if hz < 165.0 else (1.0 if hz < 500.0 else 1.35))
 
-        # 决策：只拉回超出死区的部分，残差停在 residual_cents
+        # 决策：只拉回超出死区的部分，残差停在 res_base
         err = tgt_cents - c_med
         if abs(err) <= dz:
             applied = 0.0
         else:
-            applied = float(err - np.sign(err) * residual_cents)
+            applied = float(err - np.sign(err) * res_base)
         applied = float(np.clip(applied, -max_cents, max_cents))
         applied *= float(np.clip(strength, 0.0, 1.0))
         applied = float(np.clip(applied, -limit, limit))
