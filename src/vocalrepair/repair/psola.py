@@ -42,46 +42,95 @@ def find_pitch_marks(
     f0_hz: np.ndarray,
     times: np.ndarray,
 ) -> np.ndarray:
-    """在浊音段按累积相位生成基音标记（采样点位置）。
+    """在浊音段生成基音标记（采样点位置）—— Praat 式做法。
 
-    做法：以 f0 帧序列驱动相位 phi += 2*pi*f0*dt，每当相位跨过 2*pi 就在当前
-    采样点打一个标记。这样相邻标记的间隔严格等于当时的基音周期，且不会像
-    "逐周期找峰值"那样被谐波干扰而漏标或多标。
+    为什么必须"先低通再找峰"（这是上一版失败的原因）
+    ----------------------------------------------
+    直接在原始波形上找 ``argmax(|x|)`` 会锁到**谐波峰**：人声一个周期内有
+    F1/F2/F3 好几个峰，能量最大的往往不是基音脉冲。实测那样做音准从 17.78
+    恶化到 20.27 cents，谱平坦度进一步上升。
+
+    Praat 的做法是先按 f0 把信号低通到 1.5×f0（谐波被削掉，只剩一个每周期
+    一个的基音峰），再在这个"准正弦"上找峰。步骤：
+
+    1. 用 f0 的中位数决定低通截止（1.5×f0_med，上限 0.45·sr）
+    2. 零相位低通（filtfilt，避免相位延迟导致标记整体偏移）
+    3. 在低通信号上找**正向局部极大** → 每周期一个
+    4. 周期一致性校验：间隔落在 [0.6T, 1.6T] 之外的峰视为漏检/误检，用相位
+       轨迹插值补齐
+    5. 最后按时间排序并保证严格单调
     """
     f0 = np.asarray(f0_hz, dtype=float)
     t = np.asarray(times, dtype=float)
     xa = np.asarray(x, dtype=float).ravel()
     n = xa.size
-    if f0.size < 2:
+    if f0.size < 2 or n < 64:
         return np.array([], dtype=int)
 
-    # 把 f0 插值到每个采样点
     valid = np.isfinite(f0) & (f0 > 0)
-    if valid.sum() < 2:
+    if valid.sum() < 4:
         return np.array([], dtype=int)
-    f0_s = np.interp(np.arange(n), t[valid] * sr, f0[valid], left=0.0, right=0.0)
-    f0_s = np.where(np.isin(np.arange(n), np.arange(n)), f0_s, 0.0)
+    f0_med = float(np.median(f0[valid]))
 
-    phase = np.cumsum(f0_s) / float(sr)
-    # 相位每跨过整数就有一个周期边界
-    wrap = np.diff(np.floor(phase), prepend=np.floor(phase[0])) > 0
-    marks = np.flatnonzero(wrap).astype(np.int64)
-    # 只保留附近确实浊音（f0>0）的标记
-    ok = np.zeros(marks.size, dtype=bool)
+    # --- 1) 零相位低通到 1.5 * f0 ---
+    from scipy.signal import butter, filtfilt
+
+    cutoff = min(1.5 * f0_med, 0.45 * sr)
+    if cutoff <= 0:
+        return np.array([], dtype=int)
+    try:
+        b, a = butter(4, cutoff / (sr / 2.0), btype="low")
+        xl = filtfilt(b, a, xa)
+    except Exception:
+        xl = xa
+
+    # --- 2) 正向局部极大 ---
+    cand = np.flatnonzero((xl[1:-1] > xl[:-2]) & (xl[1:-1] >= xl[2:])) + 1
+    if cand.size < 2:
+        return np.array([], dtype=int)
+
+    # --- 3) 周期一致性校验 + 补齐 ---
+    # 逐采样 f0 与周期
+    f0_s = np.interp(np.arange(n), t * sr, np.where(valid, f0, 0.0), left=0.0, right=0.0)
+    T_s = np.where(f0_s > 1.0, sr / np.maximum(f0_s, 1.0), np.inf)
+
+    keep = [int(cand[0])]
+    for p in cand[1:]:
+        prev = keep[-1]
+        gap = p - prev
+        T_here = T_s[min(prev, n - 1)]
+        if not np.isfinite(T_here):
+            # 清音/静音：直接接受（后续不在浊音段使用）
+            keep.append(int(p))
+            continue
+        if 0.6 * T_here <= gap <= 1.6 * T_here:
+            keep.append(int(p))
+        # gap 太小 → 谐波峰，丢弃；太大 → 中间漏检，交给下面的补齐逻辑
+
+    marks = np.asarray(keep, dtype=np.int64)
+
+    # 补齐：浊音段内相邻标记间隔 > 1.6T 时，等距插入
+    fixed: list[int] = []
     for i, m in enumerate(marks):
-        lo = max(0, m - 2)
-        hi = min(n, m + 3)
-        ok[i] = np.any(f0_s[lo:hi] > 0)
-    marks = marks[ok]
-    if marks.size == 0:
-        return marks
+        if i == 0:
+            fixed.append(int(m))
+            continue
+        prev = fixed[-1]
+        T_here = T_s[min(prev, n - 1)]
+        if np.isfinite(T_here) and T_here > 4:
+            gap = m - prev
+            n_missing = int(round(gap / T_here)) - 1
+            if 1 <= n_missing <= 8:
+                for j in range(1, n_missing + 1):
+                    fixed.append(int(round(prev + j * gap / (n_missing + 1))))
+        fixed.append(int(m))
 
-    # ---- 峰值吸附：试过但**失败**，已禁用 ----
-    # 曾尝试在 ±T/4 内把标记挪到 argmax(|x|)，结果更差（偏低段音准 17.78 → 20.27，
-    # HNR 进一步下降）：因为人声一个周期内有多个谐波峰，argmax 会跳到谐波上，
-    # 导致标记间隔不均匀、同步丢失。可靠的做法（Praat / REAPER 级别）需要
-    # 先低通到 1.5×f0 再找峰，并做周期一致性校验——列为 v0.4.4 待办。
-    return marks
+    out = np.asarray(fixed, dtype=np.int64)
+    out = out[(out > 0) & (out < n)]
+    if out.size:
+        out = np.unique(out)
+    return out
+
 
 
 def psola_resynth(
@@ -121,36 +170,47 @@ def psola_resynth(
     norm = np.zeros(n + 2 * sr, dtype=float)
     offset = sr // 2  # 留出头部余量，避免负索引
 
-    # 合成位置按"目标相位"推进
-    phi = 0.0
+    # ---- 合成循环 ----
+    # 两个曾经的致命 bug（用户实测"一闪一闪亮晶晶"整字失声）：
+    #  1) 步长取了 sr / tgt_f0，而清音段 tgt_f0 = 0 → 步长 = sr 个采样 = 1 秒，
+    #     一步就跳过整个字（辅音正是清音）。现在清音段固定用浊音中位周期推进。
+    #  2) 边界处 `break` 会直接终止整个循环，尾部整段丢失。现在只跳过该帧。
+    finite_periods = period_s[np.isfinite(period_s) & (period_s > 4)]
+    period_med = float(np.median(finite_periods)) if finite_periods.size else sr / 200.0
+
     pos = float(marks[0])
-    while pos < n - 1:
+    guard = 0
+    max_iter = 4 * n  # 防御性上限，避免任何情况下死循环
+    while pos < n - 1 and guard < max_iter:
+        guard += 1
         idx = int(round(pos))
-        # 找最近的基音标记，取以它为中心、2T 长的 Hann 窗
-        k = int(np.argmin(np.abs(marks - idx)))
-        mark = marks[k]
+
+        # 二分查找最近的基音标记（O(log N)，原实现是 O(N) 的全表 argmin）
+        k = int(np.searchsorted(marks, idx))
+        k = min(max(k, 0), marks.size - 1)
+        if k > 0 and abs(int(marks[k - 1]) - idx) < abs(int(marks[k]) - idx):
+            k -= 1
+        mark = int(marks[k])
+
         T = float(period_s[min(mark, n - 1)])
-        half = max(8, int(round(T)))
-        lo = mark - half
-        hi = mark + half
-        if lo < 0 or hi > n:
-            # 越界则缩短窗（保持对称）
-            half = int(min(mark, n - 1 - mark))
-            if half < 8:
-                break
-            lo, hi = mark - half, mark + half
+        if not np.isfinite(T) or T < 4.0:
+            T = period_med
+        half = int(round(T))
+        lo = max(0, mark - half)
+        hi = min(n, mark + half)
+        if hi - lo >= 8:
+            seg = sig[lo:hi] * np.hanning(hi - lo)
+            L = seg.size
+            dst = idx - L // 2 + offset
+            if dst >= 0 and dst + L <= out.size:
+                out[dst : dst + L] += seg
+                norm[dst : dst + L] += np.hanning(L)
 
-        seg = sig[lo:hi] * np.hanning(hi - lo)
-        L = seg.size
-        dst = idx - L // 2 + offset
-        if dst >= 0 and dst + L <= out.size:
-            out[dst : dst + L] += seg
-            norm[dst : dst + L] += np.hanning(L)
-
-        # 推进到下一个合成位置：步长 = 当前目标周期
-        step = float(max(8.0, sr / max(tgt_s[min(idx, n - 1)], 1.0)))
+        # 推进：清音/静音段绝不跳整秒
+        tgt_now = float(tgt_s[min(idx, n - 1)])
+        step = sr / tgt_now if tgt_now > 20.0 else period_med
+        step = float(np.clip(step, sr / 1000.0, sr / 40.0))
         pos += step
-        phi += step
 
     out = np.divide(out, np.maximum(norm, 1e-6))
     out = out[offset : offset + n]
