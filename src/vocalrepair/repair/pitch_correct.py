@@ -258,6 +258,18 @@ def plan_correction(
         applied *= float(np.clip(strength, 0.0, 1.0))
         applied = float(np.clip(applied, -limit, limit))
 
+        # ---- 飘音/滑音降权（v0.5.3）----
+        # 用户实测："B4 有点飘，修得不怎么好，感觉暴力地把原来飞走的部分删了，
+        # 变成一个闷闷的、只有一下是准的 B4。"
+        # 原因：PSOLA 假设准周期信号。对滑音/飘音（局部音高标准差大），各周期的
+        # 波形内容彼此不同，拼接必然错乱；而且强行把"飞走"的帧拉平，听感上就是
+        # "把飞走的部分删掉了"。
+        # 实测该素材：修正量与局部音高稳定度的相关系数只有 -0.008（完全无关），
+        # 说明过去对飘音和稳定音用了同样的力度。
+        seg_std_semitones = float(np.nanstd(seg_cents - seg_center)) / 100.0
+        if seg_std_semitones > 0.35:
+            applied *= float(np.clip(0.35 / seg_std_semitones, 0.0, 1.0))
+
         center_new = seg_center + applied
         resid = seg_cents - seg_center          # 颤音残差，原样保留
         out_cents = center_new + resid

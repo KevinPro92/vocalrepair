@@ -262,6 +262,56 @@ def apply_timbre_eq(
     }
 
 
+def match_envelope(
+    y: np.ndarray,
+    ref: np.ndarray,
+    sr: int,
+    win_ms: float = 20.0,
+    max_gain_db: float = 3.0,
+) -> tuple[np.ndarray, dict]:
+    """把 y 的短时响度包络对齐到参考信号 ref，消除拼接带来的"忽大忽小"。
+
+    为什么需要它
+    ------------
+    PSOLA 用固定步长 + 重叠相加合成。当标记间隔与步长不完全匹配时，相邻窗的
+    重叠率会变化，等效于一个缓慢的幅度调制。实测（29 s KTV 素材，50 ms RMS）：
+    帧间响度跳变的 p95 从原始的 7.39 dB 涨到 9.0 dB——用户听感就是"响度忽大忽小"。
+
+    做法：取两边的短时 RMS（20 ms 窗）之比作为增益曲线，平滑 + 限幅后乘回。
+    只修大尺度的包络起伏（限 ±3 dB），不动瞬时细节，所以不会压缩动态。
+    """
+    sig = np.asarray(y, dtype=float).ravel()
+    r = np.asarray(ref, dtype=float).ravel()
+    n = min(sig.size, r.size)
+    if n < 64:
+        return sig, {"applied": False}
+
+    w = max(8, int(win_ms * 1e-3 * sr))
+    kernel = np.hanning(w)
+    kernel = kernel / kernel.sum()
+
+    def env(x: np.ndarray) -> np.ndarray:
+        e = np.convolve(x[:n] ** 2, kernel, mode="same")
+        return np.sqrt(np.maximum(e, 1e-20))
+
+    e_y = env(sig)
+    e_r = env(r)
+    gain = e_r / e_y
+    # 平滑增益曲线，避免逐点抖动引入新的调制
+    k2 = max(8, int(0.10 * sr))
+    kk = np.hanning(k2)
+    gain = np.convolve(gain, kk / kk.sum(), mode="same")
+    gain = np.clip(gain, 10 ** (-max_gain_db / 20), 10 ** (max_gain_db / 20))
+
+    out = sig.copy()
+    out[:n] = sig[:n] * gain
+    return out, {
+        "applied": True,
+        "max_gain_db": round(float(20 * np.log10(np.max(gain))), 2),
+        "min_gain_db": round(float(20 * np.log10(np.min(gain))), 2),
+    }
+
+
 def compress(
     x: np.ndarray,
     sr: int,

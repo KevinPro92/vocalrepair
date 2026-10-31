@@ -95,7 +95,12 @@ def analyze(
     chroma = chroma_from_spectrum(mag, freqs)
     # 调性估计用**音高驱动**的色度（单声部）：频谱色度会被谐波污染，
     # 实测会把 F 大调判成 G# 大调、G 大调判成 D# 大调。
-    chroma_pitch = chroma_from_f0(f0.f0_hz, f0.voiced)
+    # 终止音加权：歌曲结尾通常落在主音上，给最后 15% 的帧加倍权重，
+    # 用来缓解"属调混淆"（实测 D 大调被判成 A 大调，两者只差 G / G#）。
+    w_key = np.ones(f0.f0_hz.size)
+    if w_key.size > 20:
+        w_key[int(w_key.size * 0.85) :] = 2.0
+    chroma_pitch = chroma_from_f0(f0.f0_hz, f0.voiced, weights=w_key)
     formants, _ft = track_formants(sig, sr, voiced=f0.voiced)
 
     vib = analyze_vibrato(f0.f0_hz, f0.times)
@@ -489,6 +494,12 @@ def repair(
 
             y, _eq_info = apply_timbre_eq(y, sr, strength=strength)
             resynth_info["timbre_eq"] = _eq_info
+        # 包络匹配：PSOLA 拼接会引入 ±1.5 dB 的响度起伏（实测 p95 7.4→9.0 dB），
+        # 用原始信号的短时 RMS 包络拉回来，消除"响度忽大忽小"。
+        from .repair.postproc import match_envelope
+
+        y, _env_info = match_envelope(y, clean, sr)
+        resynth_info["envelope_match"] = _env_info
         warnings_list.append(
             "psola 引擎：音准改善更明显且不做参数化重合成，但当前 pitch-mark 检测"
             "不够精确（相位边界法），可能出现轻微颗粒感；同时无法应用包络音色增强"
