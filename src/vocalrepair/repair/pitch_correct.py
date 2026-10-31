@@ -152,6 +152,7 @@ def plan_correction(
     auto_strength: bool = True,
     smooth_delta_ms: float = 25.0,
     min_dev_cents: float = 0.0,
+    glide_rate_cents_per_s: float = 2000.0,
 ) -> CorrectionPlan:
     """生成音准修正计划（只做 f0 层面的决策，不合成音频）。
 
@@ -213,6 +214,31 @@ def plan_correction(
     pcs = scale_pitch_classes(root_pc, scale) if root_pc is not None else None
     limit = float(max_semitones) * 100.0
 
+    # ---- 滑音保护（v0.5.4）----
+    # 流行演唱大量使用滑音/倚音（grace note），f0 是**连续变化**的。PSOLA 每个
+    # 周期搬的波形内容都不同，拼接必然出现颗粒感（用户："同一个音出现抖动又
+    # 一卡一卡"）。对这类帧最安全的做法是**完全不碰**，而不是降低力度。
+    #
+    # 阈值依据：自然颤音 5 Hz、深度 40 cents 时，最大变化率 = 2*pi*5*40 ≈ 1257
+    # cents/s；真实滑音通常显著快于这个量级，所以取 2000 cents/s 能把"颤音"
+    # 与"滑音"分开，不会误伤正常颤音。
+    glide = np.zeros(n, dtype=bool)
+    if glide_rate_cents_per_s > 0 and n > 3:
+        with np.errstate(invalid="ignore"):
+            rate = np.abs(np.diff(cents)) / max(dt, 1e-9)
+        glide[1:] = np.nan_to_num(rate, nan=0.0) > glide_rate_cents_per_s
+        # 前后各扩 2 帧：滑音的过渡边沿同样不适合拼接
+        if glide.any():
+            g = glide.copy()
+            for shift in (-2, -1, 1, 2):
+                shifted = np.roll(glide, shift)
+                if shift > 0:
+                    shifted[:shift] = False
+                else:
+                    shifted[shift:] = False
+                g |= shifted
+            glide = g
+
     for i0, i1 in _note_spans(f0, t, valid, cents, center):
         seg_center = center[i0:i1]
         seg_cents = cents[i0:i1]
@@ -270,11 +296,14 @@ def plan_correction(
         if seg_std_semitones > 0.35:
             applied *= float(np.clip(0.35 / seg_std_semitones, 0.0, 1.0))
 
-        center_new = seg_center + applied
+        # 逐帧应用：滑音帧一律置零（整段不碰，避免 PSOLA 拼接出颗粒感）
+        applied_vec = np.full(i1 - i0, applied, dtype=float)
+        applied_vec[glide[i0:i1]] = 0.0
+        center_new = seg_center + applied_vec
         resid = seg_cents - seg_center          # 颤音残差，原样保留
         out_cents = center_new + resid
         corrected[i0:i1] = 440.0 * np.power(2.0, out_cents / 1200.0)
-        delta[i0:i1] = applied
+        delta[i0:i1] = applied_vec
         resid_out[i0:i1] = resid
 
         notes.append(
