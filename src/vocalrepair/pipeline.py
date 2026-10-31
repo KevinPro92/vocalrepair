@@ -388,6 +388,12 @@ def repair(
         warnings_list.append("已按 octave_suspects 修正疑似八度错误（可能误改真实八度跳进）")
 
     # --- 4. 音准修正决策 ---
+    # 瞬态检测（爆破辅音 / 音符起音 / 换声点）：这些位置 PSOLA 必然拼接错乱，
+    # 修音阶段就要排除，降噪无能为力（用户实测"像爆破音"）。
+    from .analysis.transient import detect_transients
+
+    tmask = detect_transients(clean, sr, before.f0.times)
+
     plan = plan_correction(
         f0_base,
         before.f0.times,
@@ -395,6 +401,7 @@ def repair(
         scale=scale,
         strength=strength,
         min_dev_cents=min_dev_cents,
+        transient_mask=tmask,
     )
 
     # --- 4b. 参考音频对齐（加分项 A）---

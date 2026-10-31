@@ -153,6 +153,7 @@ def plan_correction(
     smooth_delta_ms: float = 25.0,
     min_dev_cents: float = 0.0,
     glide_rate_cents_per_s: float = 2000.0,
+    transient_mask: np.ndarray | None = None,
 ) -> CorrectionPlan:
     """生成音准修正计划（只做 f0 层面的决策，不合成音频）。
 
@@ -310,8 +311,27 @@ def plan_correction(
         resid = seg_cents - seg_center          # 颤音残差，原样保留
         out_cents = center_new + resid
         corrected[i0:i1] = 440.0 * np.power(2.0, out_cents / 1200.0)
-        delta[i0:i1] = applied
-        resid_out[i0:i1] = resid
+        # 瞬态保护（v0.5.7）：爆破辅音 / 音符起音 / 换声点都是非稳态，PSOLA 在
+        # 那里必然拼接错乱（用户听感："像爆破音"）。瞬态只有 20-50 ms，必须**帧级**
+        # 精确置零（滑音段长，用音符级就够了）。
+        if transient_mask is not None:
+            tm = np.asarray(transient_mask, dtype=bool)
+            n_seg = i1 - i0
+            if tm.size >= i1:
+                applied_vec = np.full(n_seg, applied, dtype=float)
+                applied_vec[tm[i0:i1]] = 0.0
+                out_c = seg_center + applied_vec + resid
+                corrected[i0:i1] = 440.0 * np.power(2.0, out_c / 1200.0)
+                delta[i0:i1] = applied_vec
+                resid_out[i0:i1] = resid
+                marks_note = applied_vec
+            else:
+                marks_note = None
+        else:
+            marks_note = None
+        if marks_note is None:
+            delta[i0:i1] = applied
+            resid_out[i0:i1] = resid
 
         notes.append(
             {
