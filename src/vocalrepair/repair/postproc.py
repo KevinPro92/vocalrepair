@@ -406,9 +406,12 @@ def compress(
     时间常数：attack 10 ms / release 100 ms 是人声的常用折中——攻击太快会
     削掉辅音起始（"吃字"），释放太快会产生抽吸感（pumping）。
     """
-    sig = np.asarray(x, dtype=float).ravel()
+    arr = np.asarray(x, dtype=float)
+    shape = arr.shape
+    # 同 soft_limit：可以展平做统计，但必须还原形状，否则立体声会被写成 2n 帧单声道
+    sig = arr.ravel()
     if sig.size == 0:
-        return sig.copy()
+        return arr.copy()
 
     # 用一阶递归平滑近似 RMS 包络（时间常数由采样率换算）
     a_att = np.exp(-1.0 / max(attack_ms * 1e-3 * sr, 1.0))
@@ -432,7 +435,7 @@ def compress(
         comp = float(np.mean(gain))
         if comp > _EPS:
             y = y / comp
-    return y
+    return y.reshape(shape)
 
 
 def soft_limit(x: np.ndarray, ceiling_db: float = -1.0) -> np.ndarray:
@@ -441,11 +444,15 @@ def soft_limit(x: np.ndarray, ceiling_db: float = -1.0) -> np.ndarray:
     ceiling_db = -1 dBFS 是流媒体交付的常见安全线（多数平台按 true peak
     ≤ -1 dBTP 做归一化，超过会被二次压制）。
     """
-    sig = np.asarray(x, dtype=float).ravel()
+    arr = np.asarray(x, dtype=float)
+    shape = arr.shape
+    # 必须在展平空间做统计（声道间用同一个峰值，保持立体声像不被破坏），
+    # 但最后一定要 reshape 回原形状——否则 (n, 2) 会被写成 2n 帧单声道。
+    sig = arr.ravel()
     peak = float(np.max(np.abs(sig))) if sig.size else 0.0
     ceiling = 10.0 ** (ceiling_db / 20.0)
     if peak <= ceiling or peak <= _EPS:
-        return sig.copy()
+        return arr.copy()
 
     # 先把整体缩到阈值内，再对超出部分做 tanh 软压缩，避免硬碰硬
     scaled = sig * (ceiling / peak) * 1.10
@@ -455,4 +462,4 @@ def soft_limit(x: np.ndarray, ceiling_db: float = -1.0) -> np.ndarray:
         s = np.sign(scaled[over])
         excess = (np.abs(scaled[over]) - ceiling) / ceiling
         out[over] = s * ceiling * (1.0 + np.tanh(excess))
-    return np.clip(out, -ceiling, ceiling)
+    return np.clip(out, -ceiling, ceiling).reshape(shape)

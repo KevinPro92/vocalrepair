@@ -365,11 +365,12 @@ def repair(
     sig = np.asarray(x, dtype=float).ravel()
     warnings_list: list[str] = []
 
-    if vocoder.lower() != "world":
+    if vocoder.lower() in ("phase", "neural"):
         warnings_list.append(
             f"vocoder={vocoder} 未实现，已回退到 world（保共振峰）；"
             "phase/neural 路径需额外实现，报告中标为降级"
         )
+        vocoder = "world"  # 必须真的回退，否则报告里写的和实际跑的不一致
 
     # --- 1. 削波修复 ---
     if clip_repair:
@@ -492,8 +493,17 @@ def repair(
     elif vocoder == "psola":
         from .repair.psola import psola_resynth
 
+        # 变调必须在这里应用：psola_resynth 接收的是"目标 f0 轨迹"。
+        # 之前误传 plan.corrected_hz（只含音准修正），导致 --transpose 在 psola
+        # 引擎下被静默丢弃——实测请求 +200 cents、实际只升了 12 cents（残差 -187.9）。
+        # 这是"静默降级"，本项目的原则是必须显式生效或显式告警，不能悄悄不执行。
+        _ps_target = plan.corrected_hz
+        if abs(applied_st) > 1e-9:
+            _ps_target = np.where(
+                _ps_target > 0, _ps_target * (2.0 ** (applied_st / 12.0)), 0.0
+            )
         y, _psola_info = psola_resynth(
-            clean, sr, before.f0.f0_hz, plan.corrected_hz, before.f0.times
+            clean, sr, before.f0.f0_hz, _ps_target, before.f0.times
         )
         resynth_info.update(_psola_info)
         # psola 是纯时域处理，没有谱包络可改 → 必须补上波形域音色增强，
