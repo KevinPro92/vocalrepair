@@ -141,6 +141,7 @@ def psola_resynth(
     times: np.ndarray,
     crossfade_ms: float = 10.0,
     min_ratio_change: float = 0.0015,
+    edge_guard_ms: float = 15.0,
 ) -> tuple[np.ndarray, dict]:
     """用 TD-PSOLA 按目标 f0 重合成，返回 (波形, 统计)。
 
@@ -226,6 +227,23 @@ def psola_resynth(
         need = np.abs(ratio - 1.0) > float(min_ratio_change)
         need_s = np.interp(np.arange(n), t * sr, need.astype(float), left=0.0, right=0.0)
         w = np.clip(vmask * need_s, 0.0, 1.0)
+        # ---- note-boundary guard (v0.4.9) ----
+        # The frames with the largest frame-wise spectral difference are clustered at
+        # note junctions, and crest factor rises there (measured 8.70 s: 2.19 -> 2.57,
+        # +17%). That is the perceived "too sharp / abrupt" artefact.
+        # Fix: within +-15 ms of a correction jump, do not splice at all - keep the
+        # original waveform. A junction is a transition region anyway, so leaving its
+        # pitch uncorrected is inaudible, while the splice artefact disappears.
+        if edge_guard_ms > 0:
+            # NOTE: must test the FRAME-level ratio, not ratio_s. ratio_s is
+            # interpolated per sample, so its first difference is always tiny and
+            # the guard would silently never fire (verified: identical output).
+            dr = np.abs(np.diff(ratio, prepend=ratio[0]))
+            edge_f = (dr > 0.0015).astype(float)
+            edge = np.interp(np.arange(n), t * sr, edge_f, left=0.0, right=0.0)
+            kk = max(3, int(edge_guard_ms * 1e-3 * sr) | 1)
+            edge = np.convolve(edge, np.hanning(kk) / np.hanning(kk).sum(), mode="same")
+            w = w * (edge < 0.5)
         # 10 ms 滑窗平滑，避免硬切爆音
         k = max(3, int(crossfade_ms * 1e-3 * sr) | 1)
         w = np.convolve(w, np.hanning(k) / np.hanning(k).sum(), mode="same")
