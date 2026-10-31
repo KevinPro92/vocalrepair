@@ -70,73 +70,46 @@ def find_pitch_marks(
     valid = np.isfinite(f0) & (f0 > 0)
     if valid.sum() < 4:
         return np.array([], dtype=int)
+    f0_med = float(np.median(f0[valid]))
 
-    # ---- 分段自适应低通（v0.4.6）----
-    # 旧实现用**全局中位 f0**定低通截止，对音高变化大的素材是错的：
-    # 用户特意录了四组高音，全局中位(≈250Hz)选出的截止频率会把 400Hz 以上的
-    # 基频也削掉，mark 直接错位。而高频谐波相位对 mark 位置极其敏感
-    # （1 个采样偏移 = 高频 1/4 周期），这就是"高频发尖 + 局部毛刺"的来源。
-    # 现在按 150 ms 分段、每段用该段自己的 f0 中位定截止，段间 50% 重叠、
-    # 只取每段的后半段以避免重复。
+    # --- 1) 零相位低通到 1.5 * f0 ---
     from scipy.signal import butter, filtfilt
 
-    seg = max(64, int(0.15 * sr))
-    half = seg // 2
-    collected: list[np.ndarray] = []
-    for start in range(0, n, half):
-        end = min(n, start + seg)
-        if end - start < 64:
-            break
-        t_lo, t_hi = start / sr, end / sr
-        m = (t >= t_lo) & (t < t_hi) & valid
-        if int(m.sum()) < 2:
-            continue
-        f_local = float(np.median(f0[m]))
-        cutoff = min(1.5 * f_local, 0.45 * sr)
-        if cutoff <= 20.0:
-            continue
-        chunk = xa[start:end]
-        try:
-            b, a = butter(4, cutoff / (sr / 2.0), btype="low")
-            pad = min(3 * max(len(a), len(b)), chunk.size - 1)
-            lowpassed = filtfilt(b, a, chunk, padlen=pad) if pad > 0 else chunk
-        except Exception:
-            lowpassed = chunk
-        pk = np.flatnonzero((lowpassed[1:-1] > lowpassed[:-2]) & (lowpassed[1:-1] >= lowpassed[2:])) + 1
-        if pk.size == 0:
-            continue
-        # 第一段取全部；后续段只取后半，避免与上一段重复
-        if start == 0:
-            keep = pk
-        else:
-            keep = pk[pk >= half]
-        if keep.size:
-            collected.append(keep + start)
-
-    if not collected:
+    cutoff = min(1.5 * f0_med, 0.45 * sr)
+    if cutoff <= 0:
         return np.array([], dtype=int)
-    cand = np.unique(np.concatenate(collected))
+    try:
+        b, a = butter(4, cutoff / (sr / 2.0), btype="low")
+        xl = filtfilt(b, a, xa)
+    except Exception:
+        xl = xa
 
-    # --- 周期一致性校验 + 补齐（与原实现一致）---
+    # --- 2) 正向局部极大 ---
+    cand = np.flatnonzero((xl[1:-1] > xl[:-2]) & (xl[1:-1] >= xl[2:])) + 1
+    if cand.size < 2:
+        return np.array([], dtype=int)
+
+    # --- 3) 周期一致性校验 + 补齐 ---
     # 逐采样 f0 与周期
     f0_s = np.interp(np.arange(n), t * sr, np.where(valid, f0, 0.0), left=0.0, right=0.0)
     T_s = np.where(f0_s > 1.0, sr / np.maximum(f0_s, 1.0), np.inf)
 
-    keep2 = [int(cand[0])]
+    keep = [int(cand[0])]
     for p in cand[1:]:
-        prev = keep2[-1]
+        prev = keep[-1]
         gap = p - prev
         T_here = T_s[min(prev, n - 1)]
         if not np.isfinite(T_here):
-            keep2.append(int(p))
+            # 清音/静音：直接接受（后续不在浊音段使用）
+            keep.append(int(p))
             continue
         if 0.6 * T_here <= gap <= 1.6 * T_here:
-            keep2.append(int(p))
-        # gap 太小 → 谐波峰，丢弃；太大 → 中间漏检，交给补齐
+            keep.append(int(p))
+        # gap 太小 → 谐波峰，丢弃；太大 → 中间漏检，交给下面的补齐逻辑
 
-    marks = np.asarray(keep2, dtype=np.int64)
+    marks = np.asarray(keep, dtype=np.int64)
 
-    # 补齐：浊音段内相邻标记间隔 > 1.6T 时等距插入
+    # 补齐：浊音段内相邻标记间隔 > 1.6T 时，等距插入
     fixed: list[int] = []
     for i, m in enumerate(marks):
         if i == 0:
@@ -157,7 +130,6 @@ def find_pitch_marks(
     if out.size:
         out = np.unique(out)
     return out
-
 
 
 
