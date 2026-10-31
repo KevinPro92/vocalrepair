@@ -296,14 +296,21 @@ def plan_correction(
         if seg_std_semitones > 0.35:
             applied *= float(np.clip(0.35 / seg_std_semitones, 0.0, 1.0))
 
-        # 逐帧应用：滑音帧一律置零（整段不碰，避免 PSOLA 拼接出颗粒感）
-        applied_vec = np.full(i1 - i0, applied, dtype=float)
-        applied_vec[glide[i0:i1]] = 0.0
-        center_new = seg_center + applied_vec
+        # ---- 音符级滑音判定（v0.5.5，替换原来的逐帧置零）----
+        # 原来把 glide 保护做成**逐帧**置零，结果处理被切成 80-130 ms 的碎片，
+        # 每片之间都要 10 ms 交叉淡化 → 密集淡化 = 用户听到的"一卡一卡/颗粒"。
+        # 实测：54 个处理段，中位时长仅 0.11 s（15 s 后 0.08 s），切换 3.4-5.6 次/秒。
+        # 改成**音符级**决策：一个音符里滑音帧占比过高就整音符不修，否则整音符统一修。
+        # 这样 applied 在音符内保持常数，不会产生碎片。
+        glide_frac = float(np.mean(glide[i0:i1])) if i1 > i0 else 0.0
+        if glide_frac > 0.30:
+            applied = 0.0
+
+        center_new = seg_center + applied
         resid = seg_cents - seg_center          # 颤音残差，原样保留
         out_cents = center_new + resid
         corrected[i0:i1] = 440.0 * np.power(2.0, out_cents / 1200.0)
-        delta[i0:i1] = applied_vec
+        delta[i0:i1] = applied
         resid_out[i0:i1] = resid
 
         notes.append(
