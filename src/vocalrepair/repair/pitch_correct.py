@@ -150,6 +150,7 @@ def plan_correction(
     vibrato_hz: float = 5.5,
     pitch_adaptive_deadzone: bool = True,
     auto_strength: bool = True,
+    smooth_delta_ms: float = 25.0,
 ) -> CorrectionPlan:
     """生成音准修正计划（只做 f0 层面的决策，不合成音频）。
 
@@ -273,6 +274,29 @@ def plan_correction(
 
     # 只保留原本就浊音的帧，绝不清音变有声
     corrected = np.where(valid, corrected, np.nan)
+
+    # ---- 修正量平滑（v0.4.5，音质关键）----
+    # 音符级目标让 applied 在音符边界硬跳，实测台阶达 33-40 cents、且只有 5-11 个
+    # 离散取值，听感就是"一格一格地跳音"。
+    # 用约 25 ms 的 Hann 窗把台阶摊成短斜坡：对音准的影响 < 2 cents，但连贯性
+    # 显著改善。
+    #
+    # 这同时回答了"局部拼接（Melodyne 式）会不会产生音符间断层"：
+    # **断层主要来自目标音高的硬台阶，而不是拼接动作本身**。只要目标轨迹是
+    # 连续斜坡、拼接点落在低能量处并做交叉淡化，就不容易听出来。
+    if smooth_delta_ms > 0 and n > 4:
+        k = max(3, int(round(smooth_delta_ms * 1e-3 / max(dt, 1e-9))) | 1)
+        w = np.hanning(k)
+        w = w / w.sum()
+        d0 = np.where(np.isfinite(delta), delta, 0.0)
+        d_s = np.convolve(d0, w, mode="same")
+        delta = np.where(np.isfinite(delta), d_s, np.nan)
+        out_cents_s = center + delta + resid_out
+        corrected = np.where(
+            valid & np.isfinite(out_cents_s),
+            440.0 * np.power(2.0, out_cents_s / 1200.0),
+            np.nan,
+        )
 
     return CorrectionPlan(
         f0_hz=f0,

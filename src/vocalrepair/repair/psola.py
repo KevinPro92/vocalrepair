@@ -140,6 +140,7 @@ def psola_resynth(
     f0_tgt: np.ndarray,
     times: np.ndarray,
     crossfade_ms: float = 10.0,
+    min_ratio_change: float = 0.0015,
 ) -> tuple[np.ndarray, dict]:
     """用 TD-PSOLA 按目标 f0 重合成，返回 (波形, 统计)。
 
@@ -219,7 +220,12 @@ def psola_resynth(
     voiced = np.isfinite(src) & (src > 0)
     if voiced.any():
         vmask = np.interp(np.arange(n), t * sr, voiced.astype(float), left=0.0, right=0.0)
-        w = np.clip(vmask, 0.0, 1.0)
+        # 只在"确实需要改动"的区域使用 PSOLA 输出：ratio ≈ 1 的地方保留原始波形。
+        # 依据是用户听感——"none（完全不动）音质最好"，那就把改动面积压到最小，
+        # 避免对死区内（本来就不用修）的帧做无谓的拼接。
+        need = np.abs(ratio - 1.0) > float(min_ratio_change)
+        need_s = np.interp(np.arange(n), t * sr, need.astype(float), left=0.0, right=0.0)
+        w = np.clip(vmask * need_s, 0.0, 1.0)
         # 10 ms 滑窗平滑，避免硬切爆音
         k = max(3, int(crossfade_ms * 1e-3 * sr) | 1)
         w = np.convolve(w, np.hanning(k) / np.hanning(k).sum(), mode="same")
