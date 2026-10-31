@@ -151,6 +151,7 @@ def plan_correction(
     pitch_adaptive_deadzone: bool = True,
     auto_strength: bool = True,
     smooth_delta_ms: float = 25.0,
+    min_dev_cents: float = 0.0,
 ) -> CorrectionPlan:
     """生成音准修正计划（只做 f0 层面的决策，不合成音频）。
 
@@ -240,7 +241,11 @@ def plan_correction(
 
         # 决策：只拉回超出死区的部分，残差停在 res_base
         err = tgt_cents - c_med
-        if abs(err) <= dz:
+        # 只修"明显跑调"的音（v0.5.0）：min_dev_cents > 0 时，偏差没超过它的
+        # 音符**完全不动**。这是给"本来唱得准的人"用的——他们的净收益主要来自
+        # 不动的部分，任何处理都是纯损失。
+        gate = max(dz, float(min_dev_cents))
+        if abs(err) <= gate:
             applied = 0.0
         else:
             applied = float(err - np.sign(err) * res_base)

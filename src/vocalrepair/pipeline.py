@@ -332,6 +332,7 @@ def repair(
     align_pitch: bool = False,
     align_timbre: str = "off",
     reference_alpha: float = 0.6,
+    min_dev_cents: float = 0.0,
 ) -> RepairResult:
     """完整修音管线。
 
@@ -382,7 +383,14 @@ def repair(
         warnings_list.append("已按 octave_suspects 修正疑似八度错误（可能误改真实八度跳进）")
 
     # --- 4. 音准修正决策 ---
-    plan = plan_correction(f0_base, before.f0.times, root_pc=root_pc, scale=scale, strength=strength)
+    plan = plan_correction(
+        f0_base,
+        before.f0.times,
+        root_pc=root_pc,
+        scale=scale,
+        strength=strength,
+        min_dev_cents=min_dev_cents,
+    )
 
     # --- 4b. 参考音频对齐（加分项 A）---
     reference_info: dict = {"enabled": False}

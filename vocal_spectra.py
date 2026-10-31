@@ -149,6 +149,8 @@ def cmd_repair(args: argparse.Namespace) -> int:
         reference_sr=sr,
         align_pitch=bool(args.align_pitch),
         align_timbre=args.align_timbre,
+        min_dev_cents=float(getattr(args, "min_dev", 0.0) or 0.0),
+        do_compress=not bool(getattr(args, "no_compress", False)),
     )
 
     out = Path(args.output)
@@ -428,6 +430,10 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--max-cents", dest="max_cents", type=float, default=100.0)
     r.add_argument("--frame-period", dest="frame_period", type=float, default=5.0)
     r.add_argument("--sr", type=int, default=44100)
+    r.add_argument("--no-compress", dest="no_compress", action="store_true",
+                   help="关闭压缩与软限幅（用于判定底噪是否被压缩抬高）")
+    r.add_argument("--min-dev", dest="min_dev", type=float, default=0.0,
+                   help="只修偏差超过此值（cents）的音，其余完全不动；0 = 关闭")
     r.add_argument("--vocoder", default="world",
                    choices=["world", "psola", "none", "phase", "neural"],
                    help="合成引擎：world（默认，保共振峰）/ psola（音准更好但可能颗粒）/ none（只修削波）")
