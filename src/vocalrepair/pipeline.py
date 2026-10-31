@@ -474,6 +474,13 @@ def repair(
             clean, sr, before.f0.f0_hz, plan.corrected_hz, before.f0.times
         )
         resynth_info.update(_psola_info)
+        # psola 是纯时域处理，没有谱包络可改 → 必须补上波形域音色增强，
+        # 否则就是"音准好了但音色变平淡"（用户实测反馈）。
+        if timbre:
+            from .repair.postproc import apply_timbre_eq
+
+            y, _eq_info = apply_timbre_eq(y, sr, strength=strength)
+            resynth_info["timbre_eq"] = _eq_info
         warnings_list.append(
             "psola 引擎：音准改善更明显且不做参数化重合成，但当前 pitch-mark 检测"
             "不够精确（相位边界法），可能出现轻微颗粒感；同时无法应用包络音色增强"

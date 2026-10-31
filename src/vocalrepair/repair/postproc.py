@@ -192,6 +192,76 @@ def _apply_silence_gate(
     return out
 
 
+def _rbj_shelf_low(x: np.ndarray, sr: int, fc: float, gain_db: float, S: float = 1.0) -> np.ndarray:
+    """RBJ low-shelf（低频搁架），用于"低次谐波支撑"。"""
+    from scipy.signal import lfilter
+
+    if abs(gain_db) < 1e-6:
+        return x
+    A = 10.0 ** (gain_db / 40.0)
+    w0 = 2.0 * np.pi * fc / sr
+    cosw, sinw = np.cos(w0), np.sin(w0)
+    alpha = sinw / 2.0 * np.sqrt((A + 1.0 / A) * (1.0 / S - 1.0) + 2.0)
+    sq = 2.0 * np.sqrt(A) * alpha
+    b0 = A * ((A + 1) - (A - 1) * cosw + sq)
+    b1 = 2 * A * ((A - 1) - (A + 1) * cosw)
+    b2 = A * ((A + 1) - (A - 1) * cosw - sq)
+    a0 = (A + 1) + (A - 1) * cosw + sq
+    a1 = -2 * ((A - 1) + (A + 1) * cosw)
+    a2 = (A + 1) + (A - 1) * cosw - sq
+    return lfilter(np.array([b0, b1, b2]) / a0, np.array([1.0, a1 / a0, a2 / a0]), x)
+
+
+def _rbj_peak(x: np.ndarray, sr: int, fc: float, gain_db: float, Q: float = 1.0) -> np.ndarray:
+    """RBJ peaking EQ（钟形），用于"存在感"提升。"""
+    from scipy.signal import lfilter
+
+    if abs(gain_db) < 1e-6:
+        return x
+    A = 10.0 ** (gain_db / 40.0)
+    w0 = 2.0 * np.pi * fc / sr
+    alpha = np.sin(w0) / (2.0 * Q)
+    b0 = 1 + alpha * A
+    b1 = -2.0 * np.cos(w0)
+    b2 = 1 - alpha * A
+    a0 = 1 + alpha / A
+    a1 = -2.0 * np.cos(w0)
+    a2 = 1 - alpha / A
+    return lfilter(np.array([b0, b1, b2]) / a0, np.array([1.0, a1 / a0, a2 / a0]), x)
+
+
+def apply_timbre_eq(
+    x: np.ndarray,
+    sr: int,
+    strength: float = 0.7,
+    low_support_db: float = 1.5,
+    presence_db: float = 1.0,
+) -> tuple[np.ndarray, dict]:
+    """波形域音色增强（IIR 滤波器，不走 STFT）。
+
+    为什么需要它
+    ------------
+    WORLD 路径能在**谱包络**上做 EQ（``enhance_envelope``），所以修完会"更好听"；
+    而 PSOLA 是纯时域处理，没有包络可改，于是 psola 版本听起来"音准好了但音色
+    变平淡"——用户实测原话："没有最开始那种修了之后比没修前好听的感觉了"。
+    这里用两个 IIR 滤波器补回同样的塑形：
+
+    - 260 Hz low-shelf +1.5 dB × strength：低次谐波支撑 → 厚度
+    - 3300 Hz peaking +1.0 dB × strength：存在感（人耳听阈最低区）
+
+    与 WORLD 路径保持同一组中心频率与增益上限，避免两条路径音色不一致。
+    """
+    s = float(np.clip(strength, 0.0, 1.0))
+    y = np.asarray(x, dtype=float).ravel().copy()
+    y = _rbj_shelf_low(y, sr, 260.0, low_support_db * s)
+    y = _rbj_peak(y, sr, 3300.0, presence_db * s, Q=0.9)
+    return y, {
+        "mode": "waveform_iir",
+        "low_support_db": round(low_support_db * s, 2),
+        "presence_db": round(presence_db * s, 2),
+    }
+
+
 def compress(
     x: np.ndarray,
     sr: int,
