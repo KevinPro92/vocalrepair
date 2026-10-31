@@ -193,6 +193,11 @@ def plan_correction(
             # 本来就准：几乎不动，只处理明显出格的音，并把整体力度压到 40%
             dz_base, res_base = 30.0, 12.0
             strength = float(strength) * 0.4
+            # v0.5.1：听感验证结论——对这类素材，PSOLA 的净收益为负
+            # （用户原话"音准提升的 benefit < 电流声的 deficit"，且 A/B 显示
+            # "几乎不处理"的版本反而最好）。所以本来准的段落直接进入
+            # "只修 >40 cents 的音"模式，其余逐位保持原样。
+            min_dev_cents = max(float(min_dev_cents), 40.0)
         elif overall_dev < 25.0:
             dz_base, res_base = 22.0, 10.0
         else:
