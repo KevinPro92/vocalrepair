@@ -153,6 +153,7 @@ def plan_correction(
     smooth_delta_ms: float = 25.0,
     min_dev_cents: float = 0.0,
     glide_rate_cents_per_s: float = 2000.0,
+    glide_frac_limit: float = 0.30,
     transient_mask: np.ndarray | None = None,
 ) -> CorrectionPlan:
     """生成音准修正计划（只做 f0 层面的决策，不合成音频）。
@@ -304,7 +305,7 @@ def plan_correction(
         # 改成**音符级**决策：一个音符里滑音帧占比过高就整音符不修，否则整音符统一修。
         # 这样 applied 在音符内保持常数，不会产生碎片。
         glide_frac = float(np.mean(glide[i0:i1])) if i1 > i0 else 0.0
-        if glide_frac > 0.30:
+        if glide_frac > glide_frac_limit:
             applied = 0.0
 
         center_new = seg_center + applied

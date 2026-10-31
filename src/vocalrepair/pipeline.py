@@ -340,6 +340,7 @@ def repair(
     min_dev_cents: float = 0.0,
     voice_relief: bool = True,
     denoise: str = "off",
+    glide_frac_limit: float = 0.30,
 ) -> RepairResult:
     """完整修音管线。
 
@@ -405,6 +406,7 @@ def repair(
         strength=strength,
         min_dev_cents=min_dev_cents,
         transient_mask=tmask,
+        glide_frac_limit=glide_frac_limit,
     )
 
     # --- 4b. 参考音频对齐（加分项 A）---
