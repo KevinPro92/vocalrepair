@@ -312,6 +312,85 @@ def match_envelope(
     }
 
 
+def _rbj_shelf_high(x: np.ndarray, sr: int, fc: float, gain_db: float, S: float = 1.0) -> np.ndarray:
+    """RBJ high-shelf（高频搁架）。用于"挤/压"段落的共振峰缓解（attenuation）。"""
+    from scipy.signal import lfilter
+
+    if abs(gain_db) < 1e-6:
+        return x
+    A = 10.0 ** (gain_db / 40.0)
+    w0 = 2.0 * np.pi * fc / sr
+    cosw, sinw = np.cos(w0), np.sin(w0)
+    alpha = sinw / 2.0 * np.sqrt((A + 1.0 / A) * (1.0 / S - 1.0) + 2.0)
+    sq = 2.0 * np.sqrt(A) * alpha
+    b0 = A * ((A + 1) + (A - 1) * cosw + sq)
+    b1 = -2 * A * ((A - 1) + (A + 1) * cosw)
+    b2 = A * ((A + 1) + (A - 1) * cosw - sq)
+    a0 = (A + 1) - (A - 1) * cosw + sq
+    a1 = 2 * ((A - 1) - (A + 1) * cosw)
+    a2 = (A + 1) - (A - 1) * cosw - sq
+    return lfilter(np.array([b0, b1, b2]) / a0, np.array([1.0, a1 / a0, a2 / a0]), x)
+
+
+def apply_resonance_relief(
+    y: np.ndarray,
+    sr: int,
+    segments: list[dict],
+    fc: float = 2000.0,
+    gain_db: float = -1.5,
+    fade_ms: float = 50.0,
+    min_votes: int = 4,
+) -> tuple[np.ndarray, dict]:
+    """对被判为"挤压（pressed）"的段落做轻微高频衰减。
+
+    物理依据：挤压声（pressed phonation）的特征是**高次谐波被相对抬升**
+    （声门闭合过紧、谱倾斜变平）。所以缓解方向是**压低 2 kHz 以上的谐波能量**，
+    让谱倾斜回到更接近放松发声的斜率——这正是"听起来没那么用力"的声学对应。
+
+    安全边界（用户明确要求"注意保留人声"）：
+    - 只处理置信度 >= min_votes 票的段落（本项目实测只有 4/5 票的那一段可信）
+    - 增益限制在 -1.5 dB（轻微，改了音色但不改变音色身份）
+    - 每段前后 50 ms 余弦淡入淡出，避免突变
+    """
+    out = np.asarray(y, dtype=float).ravel().copy()
+    n = out.size
+    applied: list[dict] = []
+
+    for seg in segments:
+        if seg.get("votes_max", 0) < min_votes or seg.get("verdict") != "pressed":
+            continue
+        s = max(0, int(seg["start_s"] * sr))
+        e = min(n, int(seg["end_s"] * sr))
+        if e - s < int(0.05 * sr):
+            continue
+        piece = out[s:e]
+        filtered = _rbj_shelf_high(piece, sr, fc, gain_db)
+        # 余弦淡入淡出
+        k = max(8, int(fade_ms * 1e-3 * sr))
+        k = min(k, (e - s) // 2)
+        w = np.ones(e - s)
+        if k > 1:
+            ramp = 0.5 - 0.5 * np.cos(np.pi * np.arange(k) / (k - 1))
+            w[:k] = ramp
+            w[-k:] = ramp[::-1]
+        out[s:e] = piece * (1.0 - w) + filtered * w
+        applied.append(
+            {
+                "start_s": round(seg["start_s"], 2),
+                "end_s": round(seg["end_s"], 2),
+                "votes": seg["votes_max"],
+                "gain_db": gain_db,
+                "fc_hz": fc,
+            }
+        )
+
+    return out, {
+        "applied": bool(applied),
+        "segments": applied,
+        "note": "仅对置信度 >= min_votes 的 pressed 段做轻微高频衰减；参数保守，可关闭",
+    }
+
+
 def compress(
     x: np.ndarray,
     sr: int,
