@@ -103,9 +103,13 @@ def find_pitch_marks(
             # 清音/静音：直接接受（后续不在浊音段使用）
             keep.append(int(p))
             continue
-        if 0.6 * T_here <= gap <= 1.6 * T_here:
+        # 只丢弃"太密"的（< 0.45T，通常是谐波峰）；"太稀"的**保留**，交给下面的
+        # 补齐逻辑等距插值填满。
+        # 曾经用 [0.6T, 1.6T] 双向卡：在真实 KTV 素材上，后半段的峰间隔不落在这个
+        # 窗口里，导致 **15 秒之后一个 mark 都不剩**（marks/s 从 247 掉到 0），
+        # PSOLA 只能靠步长硬推 → 音高正确但音色退化成笛子/橡胶声。
+        if gap >= 0.45 * T_here:
             keep.append(int(p))
-        # gap 太小 → 谐波峰，丢弃；太大 → 中间漏检，交给下面的补齐逻辑
 
     marks = np.asarray(keep, dtype=np.int64)
 
