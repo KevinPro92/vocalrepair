@@ -88,7 +88,7 @@ def cmd_analyze(args: argparse.Namespace) -> int:
 def _print_summary(report: dict) -> None:
     f0 = report.get("f0", {})
     print("\n=== 摘要 ===")
-    print(f"  时长        : {report.get('duration_sec')} s @ {report.get('sample_rate')} Hz")
+    print(f"  时长        : {report.get('duration_sec') or report.get('duration_s')} s @ {report.get('sample_rate')} Hz")
     print(f"  估计调性    : {report.get('key_estimate')}")
     if "median_abs_cents" in report:
         print(f"  音准中位偏差: {report.get('median_abs_cents')} cents (P95 {report.get('p95_abs_cents')})")

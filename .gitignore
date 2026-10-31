@@ -24,6 +24,7 @@ logs/*.log
 
 # 用户原始录音（demo 素材）——涉及个人声音，不入公开仓库
 demo/
+ktv/
 data/interim/*.wav
 
 # 模型权重（若启用 neural extras）
